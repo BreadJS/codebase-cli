@@ -226,8 +226,9 @@ func (m *commandPaletteModel) renderModalContent() string {
 	if m.cursorVisible {
 		cursor = lipgloss.NewStyle().Foreground(lipgloss.Color("WHITE")).Render("█")
 	}
-	searchLine := "/" + m.filter + cursor + " "
-	sb.WriteString(lipgloss.NewStyle().Foreground(colAccent).Bold(true).Render(searchLine))
+	searchPrefix := "/" + m.filter + " "
+	sb.WriteString(lipgloss.NewStyle().Foreground(colAccent).Bold(true).Render(searchPrefix))
+	sb.WriteString(cursor)  // Render cursor separately to preserve white color
 	sb.WriteString("\n")
 
 	// Separator
@@ -355,7 +356,8 @@ type chatModel struct {
 
 	// Command Palette
 	cmdPalette *commandPaletteModel // command palette state when open
-	lastSlashPress time.Time           // tracks when "/" was last pressed (for double "/" detection)
+	lastSlashPress  time.Time           // tracks when "/" was last pressed (for double "/" detection)
+	lastCtrlCPress  time.Time           // tracks when ctrl+c was last pressed (for double ctrl+c quit)
 }
 
 // Messages
@@ -434,6 +436,7 @@ func newChatModel(cfg *Config) chatModel {
 		statusTextIndex:   0,
 		brailleFrameIndex: 0,
 		lastSlashPress:     time.Time{}, // initialize to zero time
+		lastCtrlCPress:     time.Time{}, // initialize to zero time
 	}
 }
 
@@ -464,7 +467,6 @@ func (m chatModel) Init() tea.Cmd {
 		textinput.Blink,
 		m.spinner.Tick,
 		tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg { return notifyTickMsg{} }),
-		tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return statusRotateMsg{} }),
 	)
 }
 
@@ -581,7 +583,16 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			m.cmdPalette = newCommandPaletteModel(m.width, m.height)
 			return m, m.waitForCursorTick()
 
-		case "shift+tab":
+		case "ctrl+c":
+			// Double ctrl+c within 500ms to quit
+			if time.Since(m.lastCtrlCPress) < 500*time.Millisecond {
+				return m, tea.Quit
+			}
+			m.lastCtrlCPress = time.Now()
+			return m, nil
+
+		case "escape", "esc":
+			// ESC cancels streaming or permission requests
 			if m.state == chatStreaming {
 				select {
 				case <-m.stopCh:
@@ -623,7 +634,17 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.rebuildViewport()
 				return m, nil
 			}
-			return m, tea.Quit
+			// Clear input if it starts with "/" (command mode)
+			if strings.HasPrefix(m.input.Value(), "/") {
+				m.input.SetValue("")
+				m.input.Placeholder = "describe what you want to build..."
+				return m, nil
+			}
+
+		case "shift+tab":
+			// Cycle through modes
+			m.mode = (m.mode + 1) % 4
+			return m, nil
 
 		case "enter":
 			prompt := strings.TrimSpace(m.input.Value())
@@ -799,9 +820,6 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			cmds = append(cmds, tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
 				return narrateTickMsg{}
 			}))
-			cmds = append(cmds, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-				return statusRotateMsg{}
-			}))
 			if m.title == "" {
 				glue := m.glue
 				cmds = append(cmds, func() tea.Msg {
@@ -898,20 +916,6 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			}))
 		}
 
-	case statusRotateMsg:
-		m.statusTextIndex++
-		m.rebuildViewport()
-		// Continue rotating - faster when working (3s), slower when idle (5s)
-		if m.state == chatStreaming {
-			cmds = append(cmds, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-				return statusRotateMsg{}
-			}))
-		} else {
-			cmds = append(cmds, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
-				return statusRotateMsg{}
-			}))
-		}
-
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -928,7 +932,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		}
 	}
 
-	if m.state == chatIdle || m.state == chatPlanning || m.state == chatPlanReview || m.state == chatPermission {
+	if m.state == chatIdle || m.state == chatPlanning || m.state == chatPlanReview || m.state == chatPermission || m.state == chatStreaming {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
@@ -1582,15 +1586,15 @@ func (m chatModel) View() string {
 	var hint string
 	switch m.state {
 	case chatStreaming:
-		hint = styleDim.Render("ctrl+c stop") + sep + styleDim.Render("↑↓ scroll") + sep + styleDim.Render("shift+tab mode")
+		hint = styleDim.Render("esc stop") + sep + styleDim.Render("↑↓ scroll") + sep + styleDim.Render("shift+tab mode") + sep + styleDim.Render("2x ctrl+c quit")
 	case chatPermission:
-		hint = styleDim.Render("y allow") + sep + styleDim.Render("n deny") + sep + styleDim.Render("a always") + sep + styleDim.Render("ctrl+c deny") + sep + styleDim.Render("shift+tab mode")
+		hint = styleDim.Render("y allow") + sep + styleDim.Render("n deny") + sep + styleDim.Render("a always") + sep + styleDim.Render("esc deny") + sep + styleDim.Render("shift+tab mode")
 	case chatPlanning:
-		hint = styleDim.Render("ctrl+c cancel") + sep + styleDim.Render("enter answer") + sep + styleDim.Render("shift+tab mode")
+		hint = styleDim.Render("esc cancel") + sep + styleDim.Render("enter answer") + sep + styleDim.Render("shift+tab mode")
 	case chatPlanReview:
-		hint = styleDim.Render("ctrl+c cancel") + sep + styleDim.Render("\"go\" approve") + sep + styleDim.Render("\"skip\" skip") + sep + styleDim.Render("shift+tab mode")
+		hint = styleDim.Render("esc cancel") + sep + styleDim.Render("\"go\" approve") + sep + styleDim.Render("\"skip\" skip") + sep + styleDim.Render("shift+tab mode")
 	default:
-		hint = styleDim.Render("ctrl+c quit") + sep + styleDim.Render("/help commands") + sep + styleDim.Render("↑↓ scroll") + sep + styleDim.Render("shift+tab mode")
+		hint = styleDim.Render("2x ctrl+c quit") + sep + styleDim.Render("/help commands") + sep + styleDim.Render("↑↓ scroll") + sep + styleDim.Render("shift+tab mode")
 	}
 	inputGap := m.width - lipgloss.Width(inputLine) - lipgloss.Width(hint) - 2
 	if inputGap < 1 {
