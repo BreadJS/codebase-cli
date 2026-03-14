@@ -18,3 +18,7 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+*.bat
+*.ps1
+CLAUDE.md

@@ -19,12 +19,13 @@ import (
 type chatState int
 
 const (
-	chatIdle       chatState = iota // waiting for user input
-	chatPlanning                    // Q&A planning phase
-	chatPlanReview                  // reviewing generated plan
-	chatStreaming                   // agent is working
-	chatPermission                  // waiting for permission approval
-	chatDoneFlash                   // brief green flash after completion
+	chatIdle           chatState = iota // waiting for user input
+	chatPlanning                        // Q&A planning phase
+	chatPlanReview                      // reviewing generated plan
+	chatStreaming                       // agent is working
+	chatPermission                      // waiting for permission approval
+	chatDoneFlash                       // brief green flash after completion
+	chatCommandPalette                  // command palette menu open
 )
 
 // chatMode is a toggleable mode switched via Shift+Tab
@@ -164,6 +165,139 @@ func formatTokens(tokens int) string {
 	return fmt.Sprintf("%d", tokens)
 }
 
+// ──────────────────────────────────────────────────────────────
+//  Command Palette Functions
+// ──────────────────────────────────────────────────────────────
+
+func newCommandPaletteModel(w, h int) *commandPaletteModel {
+	m := &commandPaletteModel{
+		filter:   "",
+		selected: 0,
+		commands: commands,
+		width:    w,
+		height:   h,
+	}
+	m.updateFilter()
+	return m
+}
+
+func (m *commandPaletteModel) updateFilter() {
+	m.filtered = nil
+	filterLower := strings.ToLower(m.filter)
+
+	for _, cmd := range m.commands {
+		name := strings.ToLower(cmd.name)
+		desc := strings.ToLower(cmd.desc)
+		if strings.Contains(name, filterLower) || strings.Contains(desc, filterLower) {
+			m.filtered = append(m.filtered, cmd)
+		}
+	}
+
+	// Reset selection if out of bounds
+	if m.selected >= len(m.filtered) {
+		m.selected = 0
+	}
+	if len(m.filtered) > 0 && m.selected < 0 {
+		m.selected = 0
+	}
+}
+
+func (m *commandPaletteModel) renderModal() string {
+	// Calculate modal dimensions
+	maxCmdWidth := 40
+	for _, cmd := range m.commands {
+		width := len(cmd.name) + len(cmd.desc) + 3 // + " — "
+		if width > maxCmdWidth {
+			maxCmdWidth = width
+		}
+	}
+	maxCmdWidth = minInt(maxCmdWidth, m.width-20)
+
+	// Modal box dimensions
+	boxWidth := maxCmdWidth + 8
+	boxHeight := minInt(len(m.filtered)+4, 15)
+
+	// Calculate padding for centered modal
+	hPadding := (m.width - boxWidth) / 2
+	vPadding := (m.height - boxHeight) / 2
+
+	// Build modal content
+	var sb strings.Builder
+
+	// Header
+	sb.WriteString(lipgloss.NewStyle().Background(colAccent).Foreground(colBg).
+		Bold(true).Render(fmt.Sprintf(" %s/ Commands ", strings.Repeat(" ", boxWidth-12))))
+	sb.WriteString("\n")
+
+	// Commands list
+	visibleCount := minInt(len(m.filtered), boxHeight-3)
+	for i := 0; i < visibleCount; i++ {
+		var prefix string
+		if i == m.selected {
+			prefix = styleAccentText.Render("❯ ")
+		} else {
+			prefix = "  "
+		}
+
+		cmd := m.filtered[i]
+		cmdText := fmt.Sprintf("%s— %s", cmd.name, cmd.desc)
+
+		// Truncate if too long
+		if len(cmdText) > boxWidth-4 {
+			cmdText = cmdText[:boxWidth-5] + "…"
+		}
+
+		if i == m.selected {
+			sb.WriteString(lipgloss.NewStyle().Background(colAccent).Foreground(colBg).
+				Render(prefix + cmdText + strings.Repeat(" ", boxWidth-len(prefix)-len(cmdText))))
+		} else {
+			sb.WriteString(styleDim.Render(prefix + cmdText))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Footer with hint
+	if len(m.filtered) > boxHeight-3 {
+		sb.WriteString(styleDim.Render(fmt.Sprintf("  %d/%d commands (↑↓ to navigate, Enter to select, Esc to close)",
+			visibleCount, len(m.filtered))))
+	} else {
+		sb.WriteString(styleDim.Render("  ↑↓ navigate • Enter select • Esc close"))
+	}
+	sb.WriteString(strings.Repeat(" ", boxWidth))
+
+	// Wrap in border
+	modalContent := sb.String()
+	borderStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(colAccent).Padding(0, 1)
+	borderedModal := borderStyle.Render(modalContent)
+
+	// Center the modal horizontally and vertically
+	horizontalPad := strings.Repeat(" ", maxInt(0, hPadding))
+	verticalPad := strings.Repeat("\n", maxInt(0, vPadding))
+
+	lines := strings.Split(borderedModal, "\n")
+	var centeredLines []string
+	for _, line := range lines {
+		centeredLines = append(centeredLines, horizontalPad+line)
+	}
+
+	return verticalPad + strings.Join(centeredLines, "\n")
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // segment represents a chunk of conversation content.
 // Using segments avoids fragile ANSI string replacement.
 type segment struct {
@@ -224,6 +358,10 @@ type chatModel struct {
 	workEndTime       time.Time // when work ended
 	statusTextIndex   int       // index into status text array for rotation
 	brailleFrameIndex int       // index into braille throbber array
+
+	// Command Palette
+	cmdPalette *commandPaletteModel // command palette state when open
+	lastSlashPress time.Time           // tracks when "/" was last pressed (for double "/" detection)
 }
 
 // Messages
@@ -251,6 +389,20 @@ type intentClassifiedMsg struct {
 }
 
 type statusRotateMsg struct{}
+
+// ──────────────────────────────────────────────────────────────
+//  Command Palette Model
+// ──────────────────────────────────────────────────────────────
+
+type commandPaletteModel struct {
+	filter     string           // current search filter
+	selected   int              // index of selected command
+	commands   []slashCommand    // all available commands
+	filtered   []slashCommand    // filtered commands
+	viewport   viewport.Model    // for scrolling if needed
+	width      int              // width of the modal
+	height     int              // height of the modal
+}
 
 func newChatModel(cfg *Config) chatModel {
 	ti := textinput.New()
@@ -282,9 +434,10 @@ func newChatModel(cfg *Config) chatModel {
 		segments:          welcome,
 		streaming:         &strings.Builder{},
 		glue:              NewGlueClient(cfg),
-		notify:            newNotifyManager(),
+			notify:            newNotifyManager(),
 		statusTextIndex:   0,
 		brailleFrameIndex: 0,
+		lastSlashPress:     time.Time{}, // initialize to zero time
 	}
 }
 
@@ -340,14 +493,80 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		m.setupViewport()
 
 	case tea.KeyMsg:
+		// Handle command palette keys first
+		if m.state == chatCommandPalette {
+			switch msg.String() {
+			case "escape", "esc":
+				m.state = chatIdle
+				m.input.Focus()
+				m.input.Placeholder = "describe what you want to build..."
+				m.lastSlashPress = time.Time{}
+				return m, nil
+
+			case "up", "k":
+				if m.cmdPalette.selected > 0 {
+					m.cmdPalette.selected--
+				}
+				return m, nil
+
+			case "down", "j":
+				if m.cmdPalette.selected < len(m.cmdPalette.filtered)-1 {
+					m.cmdPalette.selected++
+				}
+				return m, nil
+
+			case "enter":
+				if len(m.cmdPalette.filtered) > 0 && m.cmdPalette.selected < len(m.cmdPalette.filtered) {
+					// Execute the selected command
+					cmd := m.cmdPalette.filtered[m.cmdPalette.selected]
+					m.state = chatIdle
+					m.input.Focus()
+					m.input.SetValue("/" + cmd.name)
+					return m, nil
+				}
+				return m, nil
+
+			case "backspace":
+				if len(m.cmdPalette.filter) > 0 {
+					m.cmdPalette.filter = m.cmdPalette.filter[:len(m.cmdPalette.filter)-1]
+					m.cmdPalette.updateFilter()
+					if m.cmdPalette.selected >= len(m.cmdPalette.filtered) {
+						m.cmdPalette.selected = maxInt(0, len(m.cmdPalette.filtered)-1)
+					}
+				}
+				return m, nil
+
+			default:
+				// Check for printable characters
+				if len(msg.String()) == 1 && msg.String() >= " " && msg.String() <= "~" {
+					m.cmdPalette.filter += msg.String()
+					m.cmdPalette.updateFilter()
+					m.cmdPalette.selected = 0
+					return m, nil
+				}
+			}
+			return m, nil
+		}
+
+		// Normal key handling
 		switch msg.String() {
-		case "shift+tab":
-			// Cycle through modes: normal -> bypass -> accept -> plan -> normal
-			m.mode = (m.mode + 1) % 4
-			m.rebuildViewport()
+		case "/":
+			// Check for double "/" (within 500ms) to skip palette and type manually
+			if time.Since(m.lastSlashPress) < 500*time.Millisecond {
+				// Double "/" - allow manual command typing
+				m.input.SetValue("/")
+				m.input.CursorEnd()
+				m.lastSlashPress = time.Time{}
+				return m, nil
+			}
+			// Single "/" - open command palette
+			m.lastSlashPress = time.Now()
+			m.state = chatCommandPalette
+			m.input.Blur()
+			m.cmdPalette = newCommandPaletteModel(m.width, m.height)
 			return m, nil
 
-		case "ctrl+c":
+		case "shift+tab":
 			if m.state == chatStreaming {
 				select {
 				case <-m.stopCh:
@@ -1370,6 +1589,13 @@ func (m chatModel) View() string {
 	// Mode indicator (always shown)
 	modeText := m.mode.Style().Render("  " + m.mode.StringWithHint() + "  ")
 	modeBar := "\n" + hLine + "\n" + modeText + "\n"
+
+	// ── Command Palette Modal ───────────────────────────────
+	if m.state == chatCommandPalette && m.cmdPalette != nil {
+		// Show filter input at the bottom
+		filterLine := " " + styleAccentText.Render("/ ") + styleAccentText.Render(m.cmdPalette.filter) + styleDim.Render(" (type to filter)")
+		return framedBody + m.cmdPalette.renderModal() + "\n" + filterLine
+	}
 
 	return framedBody + "\n" + suggestBar + statusLine + inputSeparator + inputRow + modeBar
 }
