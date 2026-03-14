@@ -694,7 +694,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		}
 	}
 
-	if m.state == chatIdle || m.state == chatPlanning || m.state == chatPlanReview {
+	if m.state == chatIdle || m.state == chatPlanning || m.state == chatPlanReview || m.state == chatPermission {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
