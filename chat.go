@@ -712,8 +712,8 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 }
 
 func (m *chatModel) setupViewport() {
-	// Account for: frame borders (2) + header (1) + input separator (1) + input (1) + mode bar (2) + padding (1) = 8
-	h := m.height - 8
+	// Account for: frame borders (2) + header (1) + status line (1) + input separator (1) + input (1) + mode bar (2) + padding (1) = 9
+	h := m.height - 9
 	if h < 5 {
 		h = 5
 	}
@@ -737,8 +737,8 @@ func (m *chatModel) rebuildViewport() {
 	}
 	// Adjust viewport height for notifications (2 lines each)
 	notifyH := len(m.notify.active)
-	// Account for: frame borders (2) + header (1) + input separator (1) + input (1) + mode bar (2) + padding (1) = 8
-	targetH := m.height - 8 - notifyH
+	// Account for: frame borders (2) + header (1) + status line (1) + input separator (1) + input (1) + mode bar (2) + padding (1) = 9
+	targetH := m.height - 9 - notifyH
 	if targetH < 5 {
 		targetH = 5
 	}
