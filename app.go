@@ -45,7 +45,7 @@ func (m appModel) Init() tea.Cmd {
 func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Global key handling
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
-		if keyMsg.String() == "ctrl+c" && m.screen == screenBoot {
+		if keyMsg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
 	}

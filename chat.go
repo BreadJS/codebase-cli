@@ -171,11 +171,12 @@ func formatTokens(tokens int) string {
 
 func newCommandPaletteModel(w, h int) *commandPaletteModel {
 	m := &commandPaletteModel{
-		filter:   "",
-		selected: 0,
-		commands: commands,
-		width:    w,
-		height:   h,
+		filter:        "",
+		selected:      0,
+		commands:      commands,
+		width:         w,
+		height:        h,
+		cursorVisible: true,
 	}
 	m.updateFilter()
 	return m
@@ -202,11 +203,11 @@ func (m *commandPaletteModel) updateFilter() {
 	}
 }
 
-func (m *commandPaletteModel) renderModal() string {
+func (m *commandPaletteModel) renderModalContent() string {
 	// Calculate modal dimensions
 	maxCmdWidth := 40
 	for _, cmd := range m.commands {
-		width := len(cmd.name) + len(cmd.desc) + 3 // + " — "
+		width := len(cmd.name) + len(cmd.desc) + 5 // + " — "
 		if width > maxCmdWidth {
 			maxCmdWidth = width
 		}
@@ -215,24 +216,29 @@ func (m *commandPaletteModel) renderModal() string {
 
 	// Modal box dimensions
 	boxWidth := maxCmdWidth + 8
-	boxHeight := minInt(len(m.filtered)+4, 15)
-
-	// Calculate padding for centered modal
-	hPadding := (m.width - boxWidth) / 2
-	vPadding := (m.height - boxHeight) / 2
+	boxHeight := minInt(len(m.filtered)+5, 15)
 
 	// Build modal content
 	var sb strings.Builder
 
-	// Header
-	sb.WriteString(lipgloss.NewStyle().Background(colAccent).Foreground(colBg).
-		Bold(true).Render(fmt.Sprintf(" %s/ Commands ", strings.Repeat(" ", boxWidth-12))))
+	// Search input line with blinking cursor
+	cursor := " "
+	if m.cursorVisible {
+		cursor = lipgloss.NewStyle().Foreground(lipgloss.Color("WHITE")).Render("█")
+	}
+	searchLine := "/" + m.filter + cursor + " "
+	sb.WriteString(lipgloss.NewStyle().Foreground(colAccent).Bold(true).Render(searchLine))
+	sb.WriteString("\n")
+
+	// Separator
+	sb.WriteString(styleDim.Render(strings.Repeat("─", boxWidth)))
 	sb.WriteString("\n")
 
 	// Commands list
-	visibleCount := minInt(len(m.filtered), boxHeight-3)
+	visibleCount := minInt(len(m.filtered), boxHeight-4)
 	for i := 0; i < visibleCount; i++ {
 		var prefix string
+		prefixVisibleWidth := 2
 		if i == m.selected {
 			prefix = styleAccentText.Render("❯ ")
 		} else {
@@ -240,48 +246,36 @@ func (m *commandPaletteModel) renderModal() string {
 		}
 
 		cmd := m.filtered[i]
-		cmdText := fmt.Sprintf("%s— %s", cmd.name, cmd.desc)
+		cmdText := fmt.Sprintf("%s — %s", cmd.name, cmd.desc)
 
 		// Truncate if too long
-		if len(cmdText) > boxWidth-4 {
-			cmdText = cmdText[:boxWidth-5] + "…"
+		availableWidth := boxWidth - prefixVisibleWidth - 2
+		if len(cmdText) > availableWidth {
+			cmdText = cmdText[:availableWidth-1] + "…"
 		}
 
 		if i == m.selected {
+			padding := strings.Repeat(" ", maxInt(0, availableWidth-len(cmdText)))
 			sb.WriteString(lipgloss.NewStyle().Background(colAccent).Foreground(colBg).
-				Render(prefix + cmdText + strings.Repeat(" ", boxWidth-len(prefix)-len(cmdText))))
+				Render(prefix + cmdText + padding))
 		} else {
 			sb.WriteString(styleDim.Render(prefix + cmdText))
 		}
 		sb.WriteString("\n")
 	}
 
-	// Footer with hint
-	if len(m.filtered) > boxHeight-3 {
-		sb.WriteString(styleDim.Render(fmt.Sprintf("  %d/%d commands (↑↓ to navigate, Enter to select, Esc to close)",
-			visibleCount, len(m.filtered))))
+	// Footer with hint - pad to box width
+	if len(m.filtered) > boxHeight-4 {
+		footerText := fmt.Sprintf("  %d/%d commands", visibleCount, len(m.filtered))
+		padding := strings.Repeat(" ", maxInt(0, boxWidth-lipgloss.Width(footerText)))
+		sb.WriteString(styleDim.Render(footerText + padding))
 	} else {
-		sb.WriteString(styleDim.Render("  ↑↓ navigate • Enter select • Esc close"))
-	}
-	sb.WriteString(strings.Repeat(" ", boxWidth))
-
-	// Wrap in border
-	modalContent := sb.String()
-	borderStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
-		BorderForeground(colAccent).Padding(0, 1)
-	borderedModal := borderStyle.Render(modalContent)
-
-	// Center the modal horizontally and vertically
-	horizontalPad := strings.Repeat(" ", maxInt(0, hPadding))
-	verticalPad := strings.Repeat("\n", maxInt(0, vPadding))
-
-	lines := strings.Split(borderedModal, "\n")
-	var centeredLines []string
-	for _, line := range lines {
-		centeredLines = append(centeredLines, horizontalPad+line)
+		footerText := " ↑↓ navigate • enter select • esc exit"
+		padding := strings.Repeat(" ", maxInt(0, boxWidth-lipgloss.Width(footerText)))
+		sb.WriteString(styleDim.Render(footerText + padding))
 	}
 
-	return verticalPad + strings.Join(centeredLines, "\n")
+	return sb.String()
 }
 
 func minInt(a, b int) int {
@@ -367,6 +361,7 @@ type chatModel struct {
 // Messages
 type agentEventMsg AgentEvent
 type flashTickMsg struct{}
+type cursorTickMsg struct{}
 type narrateTickMsg struct{}
 type notifyTickMsg struct{}
 type glueResultMsg struct {
@@ -395,13 +390,14 @@ type statusRotateMsg struct{}
 // ──────────────────────────────────────────────────────────────
 
 type commandPaletteModel struct {
-	filter     string           // current search filter
-	selected   int              // index of selected command
-	commands   []slashCommand    // all available commands
-	filtered   []slashCommand    // filtered commands
-	viewport   viewport.Model    // for scrolling if needed
-	width      int              // width of the modal
-	height     int              // height of the modal
+	filter        string           // current search filter
+	selected      int              // index of selected command
+	commands      []slashCommand    // all available commands
+	filtered      []slashCommand    // filtered commands
+	viewport      viewport.Model    // for scrolling if needed
+	width         int              // width of the modal
+	height        int              // height of the modal
+	cursorVisible bool             // for blinking cursor
 }
 
 func newChatModel(cfg *Config) chatModel {
@@ -483,10 +479,22 @@ func (m chatModel) waitForEvent() tea.Cmd {
 	}
 }
 
+func (m chatModel) waitForCursorTick() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+		return cursorTickMsg{}
+	})
+}
+
 func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case cursorTickMsg:
+		if m.state == chatCommandPalette && m.cmdPalette != nil {
+			m.cmdPalette.cursorVisible = !m.cmdPalette.cursorVisible
+			return m, m.waitForCursorTick()
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -496,6 +504,13 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		// Handle command palette keys first
 		if m.state == chatCommandPalette {
 			switch msg.String() {
+			case "ctrl+c":
+				m.state = chatIdle
+				m.input.Focus()
+				m.input.Placeholder = "describe what you want to build..."
+				m.lastSlashPress = time.Time{}
+				return m, tea.Quit
+
 			case "escape", "esc":
 				m.state = chatIdle
 				m.input.Focus()
@@ -564,7 +579,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			m.state = chatCommandPalette
 			m.input.Blur()
 			m.cmdPalette = newCommandPaletteModel(m.width, m.height)
-			return m, nil
+			return m, m.waitForCursorTick()
 
 		case "shift+tab":
 			if m.state == chatStreaming {
@@ -1592,9 +1607,20 @@ func (m chatModel) View() string {
 
 	// ── Command Palette Modal ───────────────────────────────
 	if m.state == chatCommandPalette && m.cmdPalette != nil {
-		// Show filter input at the bottom
-		filterLine := " " + styleAccentText.Render("/ ") + styleAccentText.Render(m.cmdPalette.filter) + styleDim.Render(" (type to filter)")
-		return framedBody + m.cmdPalette.renderModal() + "\n" + filterLine
+		// Create the modal content with border
+		modalContent := m.cmdPalette.renderModalContent()
+		borderedModal := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colAccent).
+			Background(colBg).
+			Padding(0, 1).
+			Render(modalContent)
+
+		// Build full-screen overlay with centered modal
+		overlay := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+			lipgloss.NewStyle().Background(colBg).Render(borderedModal))
+
+		return overlay
 	}
 
 	return framedBody + "\n" + suggestBar + statusLine + inputSeparator + inputRow + modeBar
