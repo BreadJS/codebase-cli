@@ -434,9 +434,9 @@ var chimePattern = []patternRow{
 }
 
 // PlayChime plays a short success chime (~0.3 seconds).
-// Runs in the background. Respects CODEBASE_NOBOOT / CODEBASE_NOSOUND env vars.
-func PlayChime() {
-	if os.Getenv("CODEBASE_NOBOOT") != "" || os.Getenv("CODEBASE_NOSOUND") != "" {
+// Runs in the background. Respects cfg.NoBoot and CODEBASE_NOSOUND env var.
+func PlayChime(cfg *Config) {
+	if cfg.NoBoot || os.Getenv("CODEBASE_NOSOUND") != "" {
 		return
 	}
 

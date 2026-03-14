@@ -27,7 +27,8 @@ type Config struct {
 	BaseURL string
 	Model   string
 	WorkDir string
-	Resume  bool // --resume flag: restore previous session
+	Resume  bool   // --resume flag: restore previous session
+	NoBoot  bool   // --no-boot flag: skip boot animation
 }
 
 func loadConfig() (*Config, error) {
@@ -36,6 +37,7 @@ func loadConfig() (*Config, error) {
 	dir := flag.String("dir", "", "Working directory (default: current dir)")
 	baseURL := flag.String("base-url", "", "OpenAI-compatible API base URL")
 	resume := flag.Bool("resume", false, "Resume previous session for this directory")
+	noBoot := flag.Bool("no-boot", false, "Skip boot animation")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
@@ -111,6 +113,9 @@ func loadConfig() (*Config, error) {
 
 	// Resume flag
 	cfg.Resume = *resume
+
+	// No boot: flag or env var
+	cfg.NoBoot = *noBoot || os.Getenv("CODEBASE_NOBOOT") != ""
 
 	return cfg, nil
 }

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"os"
-
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -26,7 +24,7 @@ type appModel struct {
 
 func newAppModel(cfg *Config) appModel {
 	startScreen := screenBoot
-	if os.Getenv("CODEBASE_NOBOOT") != "" {
+	if cfg.NoBoot {
 		startScreen = screenChat
 	}
 	return appModel{

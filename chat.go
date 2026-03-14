@@ -27,6 +27,143 @@ const (
 	chatDoneFlash                   // brief green flash after completion
 )
 
+// chatMode is a toggleable mode switched via Shift+Tab
+type chatMode int
+
+const (
+	modeNormal chatMode = iota // default mode
+	modeBypass                 // bypass all permissions
+	modeAccept                 // auto-accept edits
+	modePlan                   // plan mode active
+)
+
+func (m chatMode) String() string {
+	switch m {
+	case modeBypass:
+		return "▶︎▶︎ Bypass permissions on"
+	case modeAccept:
+		return "▶︎▶︎ Accept edits on"
+	case modePlan:
+		return "⏸ Plan mode on"
+	default:
+		return "● Normal mode"
+	}
+}
+
+func (m chatMode) StringWithHint() string {
+	return m.String() + " (shift+tab to cycle)"
+}
+
+func (m chatMode) Color() lipgloss.Color {
+	switch m {
+	case modeBypass:
+		return colWarning // orange
+	case modeAccept:
+		return colSuccess // green
+	case modePlan:
+		return colPurple // purple
+	default:
+		return colSecondary // gray for normal mode
+	}
+}
+
+func (m chatMode) Style() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(m.Color()).Bold(true)
+}
+
+// ──────────────────────────────────────────────────────────────
+//  Status text arrays for activity display
+// ──────────────────────────────────────────────────────────────
+
+// Braille throbber frames for working state
+var brailleThrobber = []string{
+	"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+}
+
+// Static character for idle state
+const idleCharacter = "⣿"  // Full braille pattern
+
+var statusWorkingText = []string{
+	"Cooking...",
+	"Writing the mainframe...",
+	"Crunching numbers...",
+	"Optimizing...",
+	"Refactoring...",
+	"Building features...",
+	"Analyzing code...",
+	"Generating solutions...",
+	"Processing...",
+	"Compiling thoughts...",
+	"Designing architecture...",
+	"Writing tests...",
+	"Debugging...",
+	"Implementing...",
+	"Researching...",
+}
+
+var statusDoneText = []string{
+	"Worked for",
+	"Vibed for",
+	"Cooked for",
+	"Built for",
+	"Created for",
+	"Hacked for",
+	"Engineered for",
+	"Crafted for",
+	"Developed for",
+	"Constructed for",
+}
+
+var statusIdleText = []string{
+	"Waiting for your command",
+	"Ready to assist",
+	"Standing by",
+	"Awaiting input",
+	"Ready to code",
+	"At your service",
+	"Waiting for instructions",
+	"Ready to build",
+	"Standing by for your prompt",
+	"Awaiting your request",
+}
+
+// ──────────────────────────────────────────────────────────────
+//  Helper functions
+// ──────────────────────────────────────────────────────────────
+
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return "0s"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		minutes := int(d.Minutes())
+		seconds := int(d.Seconds()) % 60
+		if seconds > 0 {
+			return fmt.Sprintf("%dm %ds", minutes, seconds)
+		}
+		return fmt.Sprintf("%dm", minutes)
+	}
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	if minutes > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+	return fmt.Sprintf("%dh", hours)
+}
+
+func formatTokens(tokens int) string {
+	if tokens >= 1000000 {
+		return fmt.Sprintf("%.1fM", float64(tokens)/1000000)
+	}
+	if tokens >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(tokens)/1000)
+	}
+	return fmt.Sprintf("%d", tokens)
+}
+
 // segment represents a chunk of conversation content.
 // Using segments avoids fragile ANSI string replacement.
 type segment struct {
@@ -49,6 +186,7 @@ type chatModel struct {
 	input     textinput.Model
 	spinner   spinner.Model
 	state     chatState
+	mode      chatMode // toggleable mode via Shift+Tab
 	width     int
 	height    int
 	ready     bool
@@ -80,6 +218,12 @@ type chatModel struct {
 
 	// Planning
 	planState *PlanState
+
+	// Status display
+	workStartTime     time.Time // when work started
+	workEndTime       time.Time // when work ended
+	statusTextIndex   int       // index into status text array for rotation
+	brailleFrameIndex int       // index into braille throbber array
 }
 
 // Messages
@@ -106,6 +250,8 @@ type intentClassifiedMsg struct {
 	context []ChatMessage
 }
 
+type statusRotateMsg struct{}
+
 func newChatModel(cfg *Config) chatModel {
 	ti := textinput.New()
 	ti.Placeholder = "describe what you want to build..."
@@ -128,14 +274,17 @@ func newChatModel(cfg *Config) chatModel {
 	}
 
 	return chatModel{
-		config:    cfg,
-		input:     ti,
-		spinner:   s,
-		state:     chatIdle,
-		segments:  welcome,
-		streaming: &strings.Builder{},
-		glue:      NewGlueClient(cfg),
-		notify:    newNotifyManager(),
+		config:            cfg,
+		input:             ti,
+		spinner:           s,
+		state:             chatIdle,
+		mode:              modeNormal,
+		segments:          welcome,
+		streaming:         &strings.Builder{},
+		glue:              NewGlueClient(cfg),
+		notify:            newNotifyManager(),
+		statusTextIndex:   0,
+		brailleFrameIndex: 0,
 	}
 }
 
@@ -166,6 +315,7 @@ func (m chatModel) Init() tea.Cmd {
 		textinput.Blink,
 		m.spinner.Tick,
 		tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg { return notifyTickMsg{} }),
+		tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return statusRotateMsg{} }),
 	)
 }
 
@@ -191,6 +341,12 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "shift+tab":
+			// Cycle through modes: normal -> bypass -> accept -> plan -> normal
+			m.mode = (m.mode + 1) % 4
+			m.rebuildViewport()
+			return m, nil
+
 		case "ctrl+c":
 			if m.state == chatStreaming {
 				select {
@@ -409,6 +565,9 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			cmds = append(cmds, tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
 				return narrateTickMsg{}
 			}))
+			cmds = append(cmds, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+				return statusRotateMsg{}
+			}))
 			if m.title == "" {
 				glue := m.glue
 				cmds = append(cmds, func() tea.Msg {
@@ -505,12 +664,30 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			}))
 		}
 
+	case statusRotateMsg:
+		m.statusTextIndex++
+		m.rebuildViewport()
+		// Continue rotating - faster when working (3s), slower when idle (5s)
+		if m.state == chatStreaming {
+			cmds = append(cmds, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+				return statusRotateMsg{}
+			}))
+		} else {
+			cmds = append(cmds, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+				return statusRotateMsg{}
+			}))
+		}
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		cmds = append(cmds, cmd)
 		// Cycle spinner color through accent palette
 		m.spinner.Style = lipgloss.NewStyle().Foreground(spinnerColors[m.notify.frame%len(spinnerColors)])
+		// Animate braille throbber when working
+		if m.state == chatStreaming {
+			m.brailleFrameIndex++
+		}
 		// Only re-render for spinner if there are pending tools (avoids 80ms full rebuild)
 		if m.state == chatStreaming && m.toolsPending > 0 {
 			m.rebuildViewport()
@@ -535,7 +712,8 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 }
 
 func (m *chatModel) setupViewport() {
-	h := m.height - 5 // frame borders + header + input + padding
+	// Account for: frame borders (2) + header (1) + input separator (1) + input (1) + mode bar (2) + padding (1) = 8
+	h := m.height - 8
 	if h < 5 {
 		h = 5
 	}
@@ -557,9 +735,10 @@ func (m *chatModel) rebuildViewport() {
 	if !m.ready {
 		return
 	}
-	// Adjust viewport height for notifications
+	// Adjust viewport height for notifications (2 lines each)
 	notifyH := len(m.notify.active)
-	targetH := m.height - 5 - notifyH
+	// Account for: frame borders (2) + header (1) + input separator (1) + input (1) + mode bar (2) + padding (1) = 8
+	targetH := m.height - 8 - notifyH
 	if targetH < 5 {
 		targetH = 5
 	}
@@ -615,6 +794,9 @@ func (m *chatModel) startAgent(prompt string) {
 	m.recentActions = nil
 	m.lastNarration = time.Now() // don't narrate immediately
 	m.userScrolled = false
+	m.workStartTime = time.Now()
+	m.workEndTime = time.Time{} // reset end time
+	m.statusTextIndex = 0
 
 	m.segments = append(m.segments, segment{
 		kind: "user",
@@ -939,6 +1121,7 @@ func (m *chatModel) handleAgentEvent(evt AgentEvent) tea.Cmd {
 		m.toolsPending = 0
 		m.toolsDone = 0
 		m.files = 0
+		m.workEndTime = time.Now()
 		if m.agent != nil {
 			m.files = m.agent.FilesChanged()
 			// Persist session to disk
@@ -947,7 +1130,7 @@ func (m *chatModel) handleAgentEvent(evt AgentEvent) tea.Cmd {
 		m.state = chatDoneFlash
 		m.flashFrames = 6
 		m.rebuildViewport()
-		go PlayChime()
+		go PlayChime(m.config)
 
 		// Glue: celebration + follow-up suggestions (in background)
 		summary := evt.Text
@@ -1136,21 +1319,44 @@ func (m chatModel) View() string {
 		suggestBar = renderSuggestions(m.suggestions, m.width) + "\n"
 	}
 
+	// ── Status Line ─────────────────────────────────────────
+	statusLine := ""
+	if m.state == chatStreaming && !m.workStartTime.IsZero() {
+		// Show status while working - use animated braille throbber
+		elapsed := time.Since(m.workStartTime)
+		totalTokens := m.tokens.PromptTokens + m.tokens.CompletionTokens
+		statusText := statusWorkingText[m.statusTextIndex%len(statusWorkingText)]
+		brailleChar := brailleThrobber[m.brailleFrameIndex%len(brailleThrobber)]
+		statusLine = styleAccentText.Render(brailleChar + " ") + styleDim.Render(fmt.Sprintf("%s (%s • %s tokens)", statusText, formatDuration(elapsed), formatTokens(totalTokens))) + "\n"
+	} else if m.state == chatIdle && !m.workEndTime.IsZero() && !m.workStartTime.IsZero() {
+		// Show status after completion
+		elapsed := m.workEndTime.Sub(m.workStartTime)
+		doneText := statusDoneText[m.statusTextIndex%len(statusDoneText)]
+		statusLine = styleAccentText.Render(idleCharacter + " ") + styleDim.Render(fmt.Sprintf("%s %s", doneText, formatDuration(elapsed))) + "\n"
+	} else {
+		// Show idle status - use static braille character
+		idleText := statusIdleText[m.statusTextIndex%len(statusIdleText)]
+		statusLine = styleAccentText.Render(idleCharacter + " ") + styleDim.Render(idleText) + "\n"
+	}
+
+	// ── Input Separator ─────────────────────────────────────
+	inputSeparator := styleDim.Render(strings.Repeat("─", m.width)) + "\n"
+
 	// ── Input ────────────────────────────────────────────────
 	inputLine := " " + m.input.View()
 	sep := styleDim.Render(" · ")
 	var hint string
 	switch m.state {
 	case chatStreaming:
-		hint = styleDim.Render("ctrl+c stop") + sep + styleDim.Render("↑↓ scroll")
+		hint = styleDim.Render("ctrl+c stop") + sep + styleDim.Render("↑↓ scroll") + sep + styleDim.Render("shift+tab mode")
 	case chatPermission:
-		hint = styleDim.Render("y allow") + sep + styleDim.Render("n deny") + sep + styleDim.Render("a always") + sep + styleDim.Render("ctrl+c deny")
+		hint = styleDim.Render("y allow") + sep + styleDim.Render("n deny") + sep + styleDim.Render("a always") + sep + styleDim.Render("ctrl+c deny") + sep + styleDim.Render("shift+tab mode")
 	case chatPlanning:
-		hint = styleDim.Render("ctrl+c cancel") + sep + styleDim.Render("enter answer")
+		hint = styleDim.Render("ctrl+c cancel") + sep + styleDim.Render("enter answer") + sep + styleDim.Render("shift+tab mode")
 	case chatPlanReview:
-		hint = styleDim.Render("ctrl+c cancel") + sep + styleDim.Render("\"go\" approve") + sep + styleDim.Render("\"skip\" skip")
+		hint = styleDim.Render("ctrl+c cancel") + sep + styleDim.Render("\"go\" approve") + sep + styleDim.Render("\"skip\" skip") + sep + styleDim.Render("shift+tab mode")
 	default:
-		hint = styleDim.Render("ctrl+c quit") + sep + styleDim.Render("/help commands") + sep + styleDim.Render("↑↓ scroll")
+		hint = styleDim.Render("ctrl+c quit") + sep + styleDim.Render("/help commands") + sep + styleDim.Render("↑↓ scroll") + sep + styleDim.Render("shift+tab mode")
 	}
 	inputGap := m.width - lipgloss.Width(inputLine) - lipgloss.Width(hint) - 2
 	if inputGap < 1 {
@@ -1158,7 +1364,14 @@ func (m chatModel) View() string {
 	}
 	inputRow := inputLine + strings.Repeat(" ", inputGap) + hint
 
-	return framedBody + "\n" + suggestBar + inputRow
+	// ── Mode Indicator ───────────────────────────────────────
+	// Horizontal line
+	hLine := styleDim.Render(strings.Repeat("─", m.width))
+	// Mode indicator (always shown)
+	modeText := m.mode.Style().Render("  " + m.mode.StringWithHint() + "  ")
+	modeBar := "\n" + hLine + "\n" + modeText + "\n"
+
+	return framedBody + "\n" + suggestBar + statusLine + inputSeparator + inputRow + modeBar
 }
 
 // stripThinkTags removes <think>...</think> blocks and stray tags from text.
