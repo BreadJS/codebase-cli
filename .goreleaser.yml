@@ -3,7 +3,7 @@ version: 2
 project_name: codebase
 
 builds:
-  - main: .
+  - main: ./src/codebase
     binary: codebase
     env:
       - CGO_ENABLED=0
