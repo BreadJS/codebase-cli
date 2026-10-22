@@ -1,7 +1,14 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import type { ToolExecution } from "../types.js";
-import { buildMessageBlocks, CollapsedReadGroup, PlainText, ToolCallLine } from "./message-view.js";
+import {
+	attachesToPrevious,
+	buildMessageBlocks,
+	CollapsedReadGroup,
+	formatReadSummary,
+	PlainText,
+	ToolCallLine,
+} from "./message-view.js";
 
 const NO_TOOLS = new Map<string, ToolExecution>();
 
@@ -162,5 +169,48 @@ describe("CollapsedReadGroup", () => {
 		const lines = group.render(80);
 		expect(lines.length).toBeGreaterThanOrEqual(3);
 		expect(lines[0]).toContain("Read 2 files");
+	});
+});
+
+describe("formatReadSummary", () => {
+	const text = (s: string) => [{ type: "text", text: s }];
+
+	it("shows how many lines and which range for a partial read", () => {
+		const details = { totalLines: 75, returnedLines: 50, startLine: 20, endLine: 69 };
+		expect(formatReadSummary(details, text(""))).toBe("50 lines · 20–69 of 75");
+	});
+
+	it("marks a whole-file read", () => {
+		const details = { totalLines: 52, returnedLines: 52, startLine: 1, endLine: 52 };
+		expect(formatReadSummary(details, text(""))).toBe("52 lines · 1–52 (whole file)");
+	});
+
+	it("recovers the range from numbered output in older sessions", () => {
+		const details = { totalLines: 75, returnedLines: 2 };
+		expect(formatReadSummary(details, text("    50→a\n    51→b\n... (showing lines 50-51 of 75)"))).toBe(
+			"2 lines · 50–51 of 75",
+		);
+	});
+
+	it("handles empty files and images", () => {
+		expect(formatReadSummary({ totalLines: 0, returnedLines: 0 }, text(""))).toBe("Empty file");
+		expect(formatReadSummary({ isImage: true }, [])).toBe("Read image");
+	});
+});
+
+describe("attachesToPrevious", () => {
+	const result = (toolName: string, isError: boolean): AgentMessage => ({
+		role: "toolResult",
+		toolCallId: "t1",
+		toolName,
+		content: [],
+		isError,
+		timestamp: 0,
+	});
+
+	it("joins successful reads to their tool call, nothing else", () => {
+		expect(attachesToPrevious(result("read_file", false))).toBe(true);
+		expect(attachesToPrevious(result("read_file", true))).toBe(false);
+		expect(attachesToPrevious(result("shell", false))).toBe(false);
 	});
 });
