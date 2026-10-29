@@ -245,6 +245,49 @@ describe("agent bundle end-to-end", () => {
 		expect(firstMessages[0]).toContain("big 0");
 	});
 
+	it("never caches a summary from an aborted run, and resumes with the full history", async () => {
+		faux.unregister();
+		faux = registerFauxProvider({
+			provider: "faux",
+			models: [{ id: "faux-small", name: "Faux Small", contextWindow: 20_270 }],
+		});
+		const firstMessages: string[] = [];
+		let abortDuringSummary = false;
+		let summaries = 0;
+		const opts = {
+			cwd,
+			configOverride: { model: faux.getModel(), apiKey: "test-key", source: "explicit" as const },
+			autoApprove: true,
+		};
+		const bundle = createAgent(opts);
+		faux.setResponses(
+			Array.from({ length: 80 }, () => (context: Context) => {
+				if (context.systemPrompt?.startsWith("Summarize the prior conversation")) {
+					summaries++;
+					// The user hits Ctrl+C while the summary is being written.
+					if (abortDuringSummary) bundle.agent.abort();
+					return fauxAssistantMessage(`summary #${summaries}`);
+				}
+				const first = context.messages[0];
+				firstMessages.push(typeof first?.content === "string" ? first.content : JSON.stringify(first?.content));
+				return fauxAssistantMessage("ok");
+			}),
+		);
+		for (let i = 0; i < 9; i++) await bundle.agent.prompt(`big ${i} ${"x ".repeat(300)}`);
+		abortDuringSummary = true;
+		await bundle.agent.prompt(`big 9 ${"x ".repeat(300)}`).catch(() => undefined);
+
+		expect(summaries).toBe(1);
+		expect(bundle.sessions.load(faux.getModel().id)?.compaction).toBeUndefined();
+
+		abortDuringSummary = false;
+		firstMessages.length = 0;
+		const resumed = createAgent({ ...opts, resume: true });
+		await resumed.agent.prompt("after restart");
+		// A fresh compaction may run after resume, but the aborted summary (#1) is never reused.
+		expect(firstMessages[0]).not.toContain("summary #1");
+	});
+
 	it("compaction monitor stays inactive when transcript is short", async () => {
 		faux.setResponses([fauxAssistantMessage("short reply")]);
 		const bundle = createAgent({
