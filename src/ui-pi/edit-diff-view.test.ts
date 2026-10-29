@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -20,13 +20,18 @@ describe("renderFileEdit", () => {
 	});
 
 	it("shows edits at their file line numbers with surrounding context", () => {
-		const dir = mkdtempSync(join(tmpdir(), "edit-diff-"));
+		// A long path wraps the `Update(<path>)` header (as macOS temp paths do),
+		// so the body is located by its summary row, not by a fixed header height.
+		const dir = join(mkdtempSync(join(tmpdir(), "edit-diff-")), "a-long-directory-name-that-makes-the-header-wrap");
+		mkdirSync(dir);
 		const file = join(dir, "f.txt");
 		writeFileSync(file, "one\ntwo\nTHREE\nfour\nfive\n");
-		const out = renderFileEdit("e1", "edit_file", { path: file, old_string: "three", new_string: "THREE" }, 80)?.map(
-			strip,
-		);
-		expect(out?.slice(1)).toEqual([
+		const out =
+			renderFileEdit("e1", "edit_file", { path: file, old_string: "three", new_string: "THREE" }, 80)?.map(strip) ??
+			[];
+		const summary = out.findIndex((line) => line.trimStart().startsWith("⎿"));
+		expect(summary).toBeGreaterThan(1);
+		expect(out.slice(summary)).toEqual([
 			"  ⎿  Added 1 line, removed 1 line",
 			"     1   one",
 			"     2   two",

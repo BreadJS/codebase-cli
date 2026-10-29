@@ -453,6 +453,15 @@ export function createAgent(opts: CreateAgentOptions = {}): AgentBundle {
 					signal,
 				);
 				const result = await compaction.compact(working, signal);
+				if (result.details.summaryFailed || signal?.aborted) {
+					// Never cache or persist a failed summary. Keep the full context
+					// while it still fits (the next request retries); truncate only
+					// when it can't be sent at all.
+					return withRelevantMemoryReminder(
+						memory,
+						compaction.fitsContextWindow(working) ? working : result.messages,
+					);
+				}
 				compactionMemo.record(messages, view, result.messages, result.details.collapsedMessageCount);
 				await hooks.dispatch(
 					"PostCompact",

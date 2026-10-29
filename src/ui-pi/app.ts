@@ -62,6 +62,7 @@ import {
 	type CopyBoxOptions,
 	type MessageKind,
 	MessageView,
+	seedToolExecutions,
 } from "./message-view.js";
 import { type ModelOption, ModelPickerOverlay } from "./model-picker-overlay.js";
 import { PermissionOverlay } from "./permission-overlay.js";
@@ -171,6 +172,7 @@ export class App extends Container {
 		if (resumedMessages.length > 0) this.envInjected = true;
 		this.messages.push(...resumedMessages);
 
+		seedToolExecutions(this.tools, resumedMessages);
 		this.transcript = new TranscriptView(resumedMessages, this.tools, this.copyRegistry);
 		// Async store subscribers need to schedule a TUI render after every
 		// state change — pi-tui only paints on input events or explicit
@@ -1255,6 +1257,7 @@ export class App extends Container {
 			this.messages.length = 0;
 			const resumedMessages = visibleMessages(next.resumedMessages);
 			this.messages.push(...resumedMessages);
+			seedToolExecutions(this.tools, resumedMessages);
 			this.transcript.load(resumedMessages);
 			const when = next.resumedFrom ? new Date(next.resumedFrom.updatedAt).toLocaleString() : "unknown time";
 			this.statusBar.note(`Resumed session from ${when} (${resumedMessages.length} messages).`);

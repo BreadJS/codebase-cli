@@ -88,7 +88,13 @@ export class ToolCallLine implements Component {
 
 	render(width: number): string[] {
 		const exec = this.tools.get(this.callId);
-		const status = exec?.status ?? "done";
+		// No execution record yet: the call is still streaming or waiting to
+		// run. Never treat it as done — a file preview built now would read
+		// the file before the edit and stick with partial arguments.
+		if (!exec) {
+			return wrap(`· ${toolActionLabel(this.name, this.args)}`, width).map((l) => ansi.dim(l));
+		}
+		const status = exec.status;
 
 		if (status === "running") {
 			const frame = SPINNER_FRAMES[Math.floor(Date.now() / 90) % SPINNER_FRAMES.length];
@@ -112,6 +118,32 @@ export class ToolCallLine implements Component {
 	}
 
 	invalidate(): void {}
+}
+
+/**
+ * Record executions for tool calls in a loaded (resumed / rewound) transcript,
+ * from their saved results, so completed calls render as done and calls that
+ * never got a result stay pending.
+ */
+export function seedToolExecutions(tools: Map<string, ToolExecution>, messages: readonly AgentMessage[]): void {
+	const calls = new Map<string, { name: string; args: unknown }>();
+	for (const m of messages) {
+		if (m.role === "assistant" && Array.isArray(m.content)) {
+			for (const block of m.content) {
+				if (block.type === "toolCall") calls.set(block.id, { name: block.name, args: block.arguments });
+			}
+		} else if (m.role === "toolResult" && !tools.has(m.toolCallId)) {
+			const call = calls.get(m.toolCallId);
+			tools.set(m.toolCallId, {
+				id: m.toolCallId,
+				name: call?.name ?? m.toolName,
+				args: call?.args,
+				status: m.isError ? "error" : "done",
+				startedAt: m.timestamp,
+				endedAt: m.timestamp,
+			});
+		}
+	}
 }
 
 interface CollapsedCall {

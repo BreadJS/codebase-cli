@@ -200,6 +200,51 @@ describe("agent bundle end-to-end", () => {
 		expect(firstMessages[0]).toContain("[Conversation compacted");
 	});
 
+	it("never caches a failed summary: keeps full context, retries, and resumes clean", async () => {
+		faux.unregister();
+		faux = registerFauxProvider({
+			provider: "faux",
+			models: [{ id: "faux-small", name: "Faux Small", contextWindow: 20_270 }],
+		});
+		const firstMessages: string[] = [];
+		let summaryCalls = 0;
+		faux.setResponses(
+			Array.from({ length: 80 }, () => (context: Context) => {
+				if (context.systemPrompt?.startsWith("Summarize the prior conversation")) {
+					summaryCalls++;
+					throw new Error("summarizer down");
+				}
+				const first = context.messages[0];
+				firstMessages.push(typeof first?.content === "string" ? first.content : JSON.stringify(first?.content));
+				return fauxAssistantMessage("ok");
+			}),
+		);
+		const opts = {
+			cwd,
+			configOverride: { model: faux.getModel(), apiKey: "test-key", source: "explicit" as const },
+			autoApprove: true,
+		};
+		const bundle = createAgent(opts);
+		for (let i = 0; i < 10; i++) await bundle.agent.prompt(`big ${i} ${"x ".repeat(300)}`);
+		const failedAttempts = summaryCalls;
+		await bundle.agent.prompt("small after failure");
+
+		expect(failedAttempts).toBeGreaterThan(0);
+		// Not memoized, so the next request tries again instead of trusting the failure.
+		expect(summaryCalls).toBeGreaterThan(failedAttempts);
+		// The full context (earliest user constraint included) was still sent.
+		expect(firstMessages.at(-1)).toContain("big 0");
+		expect(firstMessages.some((m) => m.includes("summarization failed"))).toBe(false);
+
+		const saved = bundle.sessions.load(faux.getModel().id);
+		expect(saved?.compaction).toBeUndefined();
+
+		firstMessages.length = 0;
+		const resumed = createAgent({ ...opts, resume: true });
+		await resumed.agent.prompt("after restart");
+		expect(firstMessages[0]).toContain("big 0");
+	});
+
 	it("compaction monitor stays inactive when transcript is short", async () => {
 		faux.setResponses([fauxAssistantMessage("short reply")]);
 		const bundle = createAgent({
